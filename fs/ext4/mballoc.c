@@ -1832,10 +1832,10 @@ static void mb_free_blocks(struct inode *inode, struct ext4_buddy *e4b,
 	 * clear range and then check right neighbour
 	 */
 	if (first != 0)
-		left_is_free = !mb_test_bit(first - 1, e4b->bd_bitmap);
-	block = mb_test_and_clear_bits(e4b->bd_bitmap, first, count);
+		left_is_free = !mb_test_bit(first - 1, e4b->bd_bitmap); //HARSHAD_NEED_FIX
+	block = mb_test_and_clear_bits(e4b->bd_bitmap, first, count); //HARSHAD_NEED_FIX
 	if (last + 1 < EXT4_SB(sb)->s_mb_maxs[0])
-		right_is_free = !mb_test_bit(last + 1, e4b->bd_bitmap);
+		right_is_free = !mb_test_bit(last + 1, e4b->bd_bitmap); //HARSHAD_NEED_FIX
 
 	if (unlikely(block != -1)) {
 		struct ext4_sb_info *sbi = EXT4_SB(sb);
@@ -1851,7 +1851,8 @@ static void mb_free_blocks(struct inode *inode, struct ext4_buddy *e4b,
 				      block);
 		ext4_mark_group_bitmap_corrupted(sb, e4b->bd_group,
 				EXT4_GROUP_INFO_BBITMAP_CORRUPT);
-		mb_regenerate_buddy(e4b);
+		if (buddy_on)
+			mb_regenerate_buddy(e4b);
 		goto done;
 	}
 
@@ -1876,7 +1877,7 @@ static void mb_free_blocks(struct inode *inode, struct ext4_buddy *e4b,
 		e4b->bd_info->bb_counters[0] += right_is_free ? -1 : 1;
 	}
 
-	if (first <= last)
+	if (first <= last && buddy_on)
 		mb_buddy_mark_free(e4b, first >> 1, last >> 1);
 
 done:
@@ -1894,6 +1895,11 @@ static int mb_find_extent(struct ext4_buddy *e4b, int block,
 
 	assert_spin_locked(ext4_group_lock_ptr(e4b->bd_sb, e4b->bd_group));
 	BUG_ON(ex == NULL);
+
+	if (test_opt2(e4b->bd_sb, FREESPACE_TREE) &&
+		EXT4_SB(e4b->bd_sb)->s_es->s_log_groups_per_flex) {
+		return 0;
+	}
 
 	buddy = mb_find_buddy(e4b, 0, &max);
 	BUG_ON(buddy == NULL);
@@ -1925,7 +1931,7 @@ static int mb_find_extent(struct ext4_buddy *e4b, int block,
 			break;
 
 		next = (block + 1) * (1 << order);
-		if (mb_test_bit(next, e4b->bd_bitmap))
+		if (mb_test_bit(next, e4b->bd_bitmap)) //HARSHAD_NEED_FIX
 			break;
 
 		order = mb_find_order_for_block(e4b, next);
@@ -2029,7 +2035,8 @@ static int mb_mark_used(struct ext4_buddy *e4b, struct ext4_free_extent *ex)
 	mb_set_largest_free_order(e4b->bd_sb, e4b->bd_info);
 
 	ext4_set_bits(e4b->bd_bitmap, ex->fe_start, len0);
-	mb_check_buddy(e4b);
+	if (buddy_on)
+		mb_check_buddy(e4b);
 
 	return ret;
 }
@@ -2799,11 +2806,13 @@ int ext4_mb_alloc_groupinfo(struct super_block *sb, ext4_group_t ngroups)
 	return 0;
 }
 
+
 /*
  * Group-level freespace_tree --> bitmap conversion
  *
  * Given a group and a bitmap address,
  * update the content of this group bitmap
+ * based on latest freespace_tree.
  */
 int ext4_mb_update_group_bitmap(struct super_block *sb, ext4_group_t group, void *bitmap)
 {
@@ -2891,6 +2900,7 @@ int ext4_mb_update_group_bitmap(struct super_block *sb, ext4_group_t group, void
 	}
 	return ret;
 }
+
 
 /* Create and initialize ext4_group_info data for the given group. */
 int ext4_mb_add_groupinfo(struct super_block *sb, ext4_group_t group,
@@ -4863,6 +4873,7 @@ ext4_mb_initialize_context(struct ext4_allocation_context *ac,
 	ac->ac_b_tree_ex.te_idx = 0;
 	ac->ac_b_tree_ex.te_len = 0;
 
+
 	/* we have to define context: we'll we work with a file or
 	 * locality group. this is a policy, actually */
 	ext4_mb_group_or_file(ac);
@@ -5112,6 +5123,11 @@ static void ext4_mb_freespace_use_best_found(struct ext4_allocation_context *ac,
 
 	BUG_ON(ac->ac_status == AC_STATUS_FOUND);
 	btx->te_len = min(btx->te_len, (unsigned int)ac->ac_g_ex.fe_len);
+
+	if (btx->te_offset / sbi->s_blocks_per_group != (btx->te_offset + btx->te_len) / sbi->s_blocks_per_group) {
+		btx->te_len = round_down(btx->te_len + btx->te_offset, sbi->s_blocks_per_group) - btx->te_offset;
+	}
+
 	ac->ac_status = AC_STATUS_FOUND;
 
 	/* used ALL spaces in this tree node: remove node */
@@ -5201,8 +5217,8 @@ static void ext4_mb_measure_node(struct ext4_allocation_context *ac,
 		/* Request hasn't been satisfied,
 		 * take the larger tree node */
 		goto use_extent;
-		
 
+		
 
 	} else if (cur->frsp_length > gex->fe_len && cur->frsp_length < btx->te_len) {
 		/* Request is satisfied, then we try to find
@@ -5320,7 +5336,7 @@ repeat:
 			}
 		}
 
-    node = rb_first(&tree->frsp_root);
+		node = rb_first(&tree->frsp_root);
 		while (node && ac->ac_status == AC_STATUS_CONTINUE) {
 			cur = rb_entry(node, struct ext4_freespace_node, frsp_node);
 			ext4_mb_measure_node(ac, tree_idx, cur);
@@ -5643,7 +5659,7 @@ ext4_mb_free_metadata(handle_t *handle, struct ext4_buddy *e4b,
 
 	if (test_opt2(sb, FREESPACE_TREE) && sbi->s_es->s_log_groups_per_flex) {
 		buddy_on = 0;
-	}	
+	}
 
 	BUG_ON(!ext4_handle_valid(handle));
 	BUG_ON(e4b->bd_bitmap_page == NULL);
@@ -5927,7 +5943,7 @@ do_more:
 	}
 #endif
 	trace_ext4_mballoc_free(sb, inode, block_group, bit, count_clusters);
-
+	
 	/* __GFP_NOFAIL: retry infinitely, ignore TIF_MEMDIE and memcg limit. */
 	err = ext4_mb_load_buddy_gfp(sb, block_group, &e4b,
 					GFP_NOFS|__GFP_NOFAIL);
